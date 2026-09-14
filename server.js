@@ -1,4 +1,5 @@
 const express = require('express');
+const proxy = require('express-http-proxy');
 const fs = require('fs');
 const path = require('path');
 
@@ -6,9 +7,6 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const SECRET = process.env.GATEWAY_SECRET || '@sabbir#ahmed';
 const DATA_FILE = path.join(__dirname, 'last_url.json');
-
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
 
 let state = {
     url: '',
@@ -25,8 +23,8 @@ if (fs.existsSync(DATA_FILE)) {
 }
 
 // 1. Webhook endpoint called by Android TV Box when tunnel URL is generated or changes
-app.post('/api/update-tunnel', (req, res) => {
-    const { url, secret } = req.body;
+app.post('/api/update-tunnel', express.json(), (req, res) => {
+    const { url, secret } = req.body || {};
     if (secret !== SECRET && req.headers['x-gateway-secret'] !== SECRET) {
         return res.status(403).json({ success: false, error: 'ভুল সিক্রেট কি (Invalid Secret)' });
     }
@@ -35,7 +33,7 @@ app.post('/api/update-tunnel', (req, res) => {
         return res.status(400).json({ success: false, error: 'URL প্রদান করা হয়নি' });
     }
 
-    state.url = url.trim();
+    state.url = url.trim().replace(/\/+$/, '');
     state.updatedAt = new Date().toISOString();
 
     try {
@@ -57,15 +55,8 @@ app.get('/api/current-tunnel', (req, res) => {
     });
 });
 
-// 3. Root redirect: seamlessly forwards visitors to the Android TV Box tunnel
-app.get('/', (req, res) => {
-    if (state.url) {
-        // Redirect directly to the live Cloudflare / Serveo URL
-        return res.redirect(state.url);
-    }
-
-    // If TV box hasn't registered yet, display friendly status page
-    res.send(`
+// 3. Fallback waiting screen if Android TV box is offline / not registered yet
+const renderWaitingPage = () => `
 <!DOCTYPE html>
 <html lang="bn">
 <head>
@@ -79,7 +70,6 @@ app.get('/', (req, res) => {
         p { color: #94a3b8; font-size: 0.95rem; line-height: 1.6; }
         .spinner { border: 4px solid #334155; border-top: 4px solid #38bdf8; border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite; margin: 1.5rem auto; }
         @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-        .btn { display: inline-block; background: #0284c7; color: white; padding: 0.75rem 1.5rem; border-radius: 8px; text-decoration: none; font-weight: bold; margin-top: 1rem; }
     </style>
     <meta http-equiv="refresh" content="5">
 </head>
@@ -88,14 +78,35 @@ app.get('/', (req, res) => {
         <h1>🖨️ TOBI Print Server Gateway</h1>
         <div class="spinner"></div>
         <p><strong>টিভি বক্সের সাথে সংযোগ স্থাপন হচ্ছে...</strong></p>
-        <p>অ্যান্ড্রয়েড টিভি বক্সে Remote Print Server অ্যাপটি চালু রাখুন। লিঙ্ক তৈরি হওয়া মাত্রই স্বয়ংক্রিয়ভাবে আপনাকে মূল প্রিন্ট পেজে রিডাইরেক্ট করা হবে।</p>
+        <p>অ্যান্ড্রয়েড টিভি বক্সে Remote Print Server অ্যাপটি চালু রাখুন। লিঙ্ক তৈরি হওয়া মাত্রই স্বয়ংক্রিয়ভাবে মূল প্রিন্ট পেজ চালু হবে।</p>
         <p style="font-size: 0.8rem; color: #64748b;">(প্রতি ৫ সেকেন্ড পর পর পেজটি রিফ্রেশ হচ্ছে)</p>
     </div>
 </body>
 </html>
-    `);
+`;
+
+// 4. Reverse Proxy all other web traffic seamlessly to the TV Box
+// This completely hides *.serveousercontent.com and prevents mobile ISP DNS block in Bangladesh!
+app.use((req, res, next) => {
+    if (!state.url) {
+        return res.status(503).send(renderWaitingPage());
+    }
+
+    return proxy(state.url, {
+        limit: '60mb',
+        proxyReqOptDecorator: (proxyReqOpts, srcReq) => {
+            // Forward original host and connection headers
+            proxyReqOpts.headers['X-Forwarded-Host'] = srcReq.headers.host;
+            proxyReqOpts.headers['X-Forwarded-Proto'] = 'https';
+            return proxyReqOpts;
+        },
+        proxyErrorHandler: (err, res, next) => {
+            console.error('Proxy Error to TV Box:', err.message);
+            res.status(502).send(renderWaitingPage());
+        }
+    })(req, res, next);
 });
 
 app.listen(PORT, () => {
-    console.log(`Render Gateway server listening on port ${PORT}`);
+    console.log(`Render Gateway reverse proxy listening on port ${PORT}`);
 });

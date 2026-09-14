@@ -103,9 +103,13 @@ app.use((req, res, next) => {
         proxyReqOptDecorator: (proxyReqOpts, srcReq) => {
             if (targetHost) {
                 proxyReqOpts.headers['host'] = targetHost;
+                proxyReqOpts.servername = targetHost;
             }
+            proxyReqOpts.headers['connection'] = 'close';
             proxyReqOpts.headers['X-Forwarded-Host'] = srcReq.headers.host;
             proxyReqOpts.headers['X-Forwarded-Proto'] = 'https';
+            proxyReqOpts.agent = false;
+            proxyReqOpts.rejectUnauthorized = false;
             return proxyReqOpts;
         },
         proxyErrorHandler: (err, res, next) => {

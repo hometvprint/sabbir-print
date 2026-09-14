@@ -92,17 +92,32 @@ app.use((req, res, next) => {
         return res.status(503).send(renderWaitingPage());
     }
 
+    let targetHost = '';
+    try {
+        targetHost = new URL(state.url).host;
+    } catch (e) {}
+
     return proxy(state.url, {
-        limit: '60mb',
+        parseReqBody: false, // Stream request body directly so multipart file uploads are never truncated or corrupted
+        timeout: 300000,     // 5 minutes timeout for large uploads
         proxyReqOptDecorator: (proxyReqOpts, srcReq) => {
-            // Forward original host and connection headers
+            if (targetHost) {
+                proxyReqOpts.headers['host'] = targetHost;
+            }
             proxyReqOpts.headers['X-Forwarded-Host'] = srcReq.headers.host;
             proxyReqOpts.headers['X-Forwarded-Proto'] = 'https';
             return proxyReqOpts;
         },
         proxyErrorHandler: (err, res, next) => {
             console.error('Proxy Error to TV Box:', err.message);
-            res.status(502).send(renderWaitingPage());
+            if (req.path && req.path.startsWith('/api/')) {
+                res.status(502).json({
+                    success: false,
+                    error: 'টিভি বক্সের সাথে যোগাযোগ করা যায়নি (' + (err.message || 'নেটওয়ার্ক সমস্যা') + ')। অনুগ্রহ করে টিভি বক্সে অ্যাপ চালু রাখুন।'
+                });
+            } else {
+                res.status(502).send(renderWaitingPage());
+            }
         }
     })(req, res, next);
 });
